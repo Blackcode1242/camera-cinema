@@ -1,6 +1,6 @@
 import OBR from "@owlbear-rodeo/sdk";
 
-const ID = "com.seunome.camera-cinema";
+const ID = "io.github.blackcode1242.camera-cinema";
 // URL absoluta do ícone (funciona em subpasta do GitHub Pages)
 const ICON = new URL("icon.svg", window.location.href).href;
 
