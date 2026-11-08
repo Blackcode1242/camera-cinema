@@ -20,7 +20,8 @@ const CFG = {
 };
 
 // ====== ESTADO ======
-const keys = new Set();
+// Ações lógicas seguradas no momento (não teclas brutas)
+const held = new Set();
 let vx = 0, vy = 0, vz = 0;
 let pos = { x: 0, y: 0 };
 let scale = 1;
@@ -31,6 +32,32 @@ let lastT = 0;
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
+
+
+// Converte o evento de teclado em uma ação lógica.
+// Usa event.code (independe de Shift/layout) e cai para event.key se não existir.
+function toAction(ev) {
+  const c = ev.code;
+  if (c) {
+    if (c.startsWith("Arrow")) return c;
+    if (c === "KeyE" || c === "Equal" || c === "NumpadAdd") return "zoomIn";
+    if (c === "KeyQ" || c === "Minus" || c === "NumpadSubtract") return "zoomOut";
+    if (c === "ShiftLeft" || c === "ShiftRight") return "fast";
+    if (c === "AltLeft" || c === "AltRight") return "slow";
+    if (c === "KeyR" || c === "Home") return "reset";
+    return null;
+  }
+  const k = ev.key;
+  if (k && k.startsWith("Arrow")) return k;
+  switch ((k || "").toLowerCase()) {
+    case "e": case "+": case "=": return "zoomIn";
+    case "q": case "-": case "_": return "zoomOut";
+    case "shift": return "fast";
+    case "alt": return "slow";
+    case "r": case "home": return "reset";
+    default: return null;
+  }
+}
 
 async function syncFromViewport() {
   [pos, scale, width, height] = await Promise.all([
@@ -60,13 +87,11 @@ function tick() {
   const dt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
 
-  const dirX = (keys.has("ArrowRight") ? 1 : 0) - (keys.has("ArrowLeft") ? 1 : 0);
-  const dirY = (keys.has("ArrowDown") ? 1 : 0) - (keys.has("ArrowUp") ? 1 : 0);
-  const dirZ =
-    (keys.has("e") || keys.has("+") || keys.has("=") ? 1 : 0) -
-    (keys.has("q") || keys.has("-") ? 1 : 0);
+  const dirX = (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0);
+  const dirY = (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0);
+  const dirZ = (held.has("zoomIn") ? 1 : 0) - (held.has("zoomOut") ? 1 : 0);
 
-  const mult = keys.has("Shift") ? CFG.fastMult : keys.has("Alt") ? CFG.slowMult : 1;
+  const mult = held.has("fast") ? CFG.fastMult : held.has("slow") ? CFG.slowMult : 1;
 
   const len = Math.hypot(dirX, dirY) || 1;
   const targetVx = (dirX / len) * CFG.panSpeed * mult;
@@ -77,7 +102,7 @@ function tick() {
   vy = approach(vy, targetVy, dirX || dirY ? CFG.accel : CFG.friction, dt);
   vz = approach(vz, targetVz, dirZ ? CFG.zoomAccel : CFG.zoomFriction, dt);
 
-  if (Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5 && Math.abs(vz) < 0.001 && !keys.size) {
+  if (Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5 && Math.abs(vz) < 0.001 && !dirX && !dirY && !dirZ) {
     stopLoop();
     return;
   }
@@ -105,7 +130,8 @@ const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
 
 OBR.onReady(() => {
-  console.log("[Camera Cinema] carregada");
+  console.log("[Camera Cinema] carregada v2");
+  window.addEventListener("blur", () => held.clear());
 
   OBR.tool.create({
     id: TOOL_ID,
@@ -118,16 +144,18 @@ OBR.onReady(() => {
     icons: [{ icon: ICON, label: "Câmera Cinema", filter: { activeTools: [TOOL_ID] } }],
     shortcut: "C",
     onKeyDown: (_ctx, event) => {
-      console.log("[Camera Cinema] tecla:", event.key);
-      const k = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-      if (k === "Home" || k === "r") { resetView(); return; }
-      keys.add(k);
+      const a = toAction(event);
+      if (!a) return;
+      event.preventDefault?.();
+      if (a === "reset") { resetView(); return; }
+      held.add(a);
       startLoop();
     },
     onKeyUp: (_ctx, event) => {
-      const k = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-      keys.delete(k);
+      const a = toAction(event);
+      if (!a) return;
+      held.delete(a);
     },
-    onDeactivate: () => { keys.clear(); },
+    onDeactivate: () => { held.clear(); },
   });
 });
