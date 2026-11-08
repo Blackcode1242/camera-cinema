@@ -105,13 +105,12 @@ const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
 
 OBR.onReady(() => {
+  console.log("[Camera Cinema] carregada");
+
   OBR.tool.create({
     id: TOOL_ID,
     icons: [{ icon: ICON, label: "Câmera Cinema" }],
-    onClick: async () => {
-      await OBR.tool.activateMode(TOOL_ID, MODE_ID);
-      return true;
-    },
+    defaultMode: MODE_ID,
   });
 
   OBR.tool.createMode({
@@ -119,6 +118,7 @@ OBR.onReady(() => {
     icons: [{ icon: ICON, label: "Câmera Cinema", filter: { activeTools: [TOOL_ID] } }],
     shortcut: "C",
     onKeyDown: (_ctx, event) => {
+      console.log("[Camera Cinema] tecla:", event.key);
       const k = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       if (k === "Home" || k === "r") { resetView(); return; }
       keys.add(k);
