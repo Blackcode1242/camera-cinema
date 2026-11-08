@@ -34,12 +34,13 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
 
 // ====== MAPA DE TECLAS (troque aqui pelas teclas que preferir) ======
+// Teclas que já têm atalho no Owlbear (evitar): W S D F M Q T
 // Use o nome da tecla em "code": KeyA..KeyZ, Digit0..Digit9, ArrowUp, Home, Space, etc.
 const KEYMAP = {
-  up:      ["KeyW", "ArrowUp"],
-  down:    ["KeyS", "ArrowDown"],
-  left:    ["KeyA", "ArrowLeft"],
-  right:   ["KeyD", "ArrowRight"],
+  up:      ["KeyI", "ArrowUp"],
+  down:    ["KeyK", "ArrowDown"],
+  left:    ["KeyJ", "ArrowLeft"],
+  right:   ["KeyL", "ArrowRight"],
   zoomIn:  ["KeyZ"],
   zoomOut: ["KeyX"],
   fast:    ["ShiftLeft", "ShiftRight"],
@@ -143,7 +144,7 @@ const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
 
 OBR.onReady(() => {
-  console.log("[Camera Cinema] carregada v4");
+  console.log("[Camera Cinema] carregada v5");
   window.addEventListener("blur", () => { held.clear(); modDown.clear(); });
 
   OBR.tool.create({
