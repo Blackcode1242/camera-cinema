@@ -1,0 +1,9 @@
+{
+  "name": "Câmera Cinematográfica",
+  "version": "1.0.0",
+  "manifest_version": 1,
+  "author": "Seu Nome",
+  "description": "Movimento fluido de câmera com setas e zoom dinâmico.",
+  "icon": "icon.svg",
+  "background_url": "background.html"
+}
