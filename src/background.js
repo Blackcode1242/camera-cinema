@@ -1,14 +1,13 @@
 import OBR from "@owlbear-rodeo/sdk";
 
 const ID = "io.github.blackcode1242.camera-cinema";
-// URL absoluta do ícone (funciona em subpasta do GitHub Pages)
 const ICON = new URL("icon.svg", window.location.href).href;
 
 // ====== CONFIGURAÇÃO (ajuste ao gosto) ======
 const CFG = {
   panSpeed: 900,   // px de tela por segundo (velocidade máx.)
-  fastMult: 2.2,   // multiplicador com Shift
-  slowMult: 0.35,  // multiplicador com Alt
+  fastMult: 2.2,   // multiplicador do modo rápido (Shift)
+  slowMult: 0.35,  // multiplicador do modo lento (Alt)
   accel: 4.5,      // maior = atinge a velocidade mais rápido
   friction: 3.2,   // menor = desliza mais ao soltar a tecla
   zoomSpeed: 1.2,  // fator exponencial de zoom por segundo
@@ -20,8 +19,9 @@ const CFG = {
 };
 
 // ====== ESTADO ======
-// Ações lógicas seguradas no momento (não teclas brutas)
-const held = new Set();
+const held = new Set();      // direções/zoom segurados: up, down, left, right, zoomIn, zoomOut
+const modDown = new Map();   // modificadores fisicamente apertados (evita alternar com auto-repeat)
+let speedMode = null;        // null | "fast" | "slow" (interruptor)
 let vx = 0, vy = 0, vz = 0;
 let pos = { x: 0, y: 0 };
 let scale = 1;
@@ -33,30 +33,43 @@ let lastT = 0;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
 
+// ====== MAPA DE TECLAS (troque aqui pelas teclas que preferir) ======
+// Use o nome da tecla em "code": KeyA..KeyZ, Digit0..Digit9, ArrowUp, Home, Space, etc.
+const KEYMAP = {
+  up:      ["KeyW", "ArrowUp"],
+  down:    ["KeyS", "ArrowDown"],
+  left:    ["KeyA", "ArrowLeft"],
+  right:   ["KeyD", "ArrowRight"],
+  zoomIn:  ["KeyZ"],
+  zoomOut: ["KeyX"],
+  fast:    ["ShiftLeft", "ShiftRight"],
+  slow:    ["AltLeft", "AltRight"],
+  reset:   ["KeyR", "Home"],
+};
 
-// Converte o evento de teclado em uma ação lógica.
-// Usa event.code (independe de Shift/layout) e cai para event.key se não existir.
+const CODE_TO_ACTION = new Map();
+for (const [action, codes] of Object.entries(KEYMAP)) {
+  for (const c of codes) CODE_TO_ACTION.set(c, action);
+}
+
+// Converte o evento de teclado em uma ação lógica (usa event.code, com fallback em event.key)
 function toAction(ev) {
-  const c = ev.code;
-  if (c) {
-    if (c.startsWith("Arrow")) return c;
-    if (c === "KeyE" || c === "Equal" || c === "NumpadAdd") return "zoomIn";
-    if (c === "KeyQ" || c === "Minus" || c === "NumpadSubtract") return "zoomOut";
-    if (c === "ShiftLeft" || c === "ShiftRight") return "fast";
-    if (c === "AltLeft" || c === "AltRight") return "slow";
-    if (c === "KeyR" || c === "Home") return "reset";
-    return null;
-  }
-  const k = ev.key;
-  if (k && k.startsWith("Arrow")) return k;
-  switch ((k || "").toLowerCase()) {
-    case "e": case "+": case "=": return "zoomIn";
-    case "q": case "-": case "_": return "zoomOut";
-    case "shift": return "fast";
-    case "alt": return "slow";
-    case "r": case "home": return "reset";
-    default: return null;
-  }
+  if (ev.code) return CODE_TO_ACTION.get(ev.code) ?? null;
+  const k = ev.key || "";
+  const code =
+    k.length === 1 && /[a-z]/i.test(k) ? "Key" + k.toUpperCase() :
+    k === "Shift" ? "ShiftLeft" :
+    k === "Alt" ? "AltLeft" : k;
+  return CODE_TO_ACTION.get(code) ?? null;
+}
+
+function toggleSpeed(mode) {
+  speedMode = speedMode === mode ? null : mode;
+  const msg =
+    speedMode === "fast" ? "⚡ Câmera rápida: ATIVADA" :
+    speedMode === "slow" ? "🐢 Câmera lenta: ATIVADA" :
+    "Velocidade normal";
+  OBR.notification.show(msg, speedMode ? "SUCCESS" : "DEFAULT");
 }
 
 async function syncFromViewport() {
@@ -87,11 +100,11 @@ function tick() {
   const dt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
 
-  const dirX = (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0);
-  const dirY = (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0);
+  const dirX = (held.has("right") ? 1 : 0) - (held.has("left") ? 1 : 0);
+  const dirY = (held.has("down") ? 1 : 0) - (held.has("up") ? 1 : 0);
   const dirZ = (held.has("zoomIn") ? 1 : 0) - (held.has("zoomOut") ? 1 : 0);
 
-  const mult = held.has("fast") ? CFG.fastMult : held.has("slow") ? CFG.slowMult : 1;
+  const mult = speedMode === "fast" ? CFG.fastMult : speedMode === "slow" ? CFG.slowMult : 1;
 
   const len = Math.hypot(dirX, dirY) || 1;
   const targetVx = (dirX / len) * CFG.panSpeed * mult;
@@ -130,8 +143,8 @@ const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
 
 OBR.onReady(() => {
-  console.log("[Camera Cinema] carregada v2");
-  window.addEventListener("blur", () => held.clear());
+  console.log("[Camera Cinema] carregada v4");
+  window.addEventListener("blur", () => { held.clear(); modDown.clear(); });
 
   OBR.tool.create({
     id: TOOL_ID,
@@ -147,15 +160,29 @@ OBR.onReady(() => {
       const a = toAction(event);
       if (!a) return;
       event.preventDefault?.();
+
       if (a === "reset") { resetView(); return; }
+
+      // Shift e Alt: interruptores (um toque liga, outro desliga)
+      if (a === "fast" || a === "slow") {
+        const t = performance.now();
+        const last = modDown.get(a);
+        // ignora auto-repeat enquanto a tecla está segurada (com tolerância caso o keyup se perca)
+        if (last !== undefined && t - last < 2000) return;
+        modDown.set(a, t);
+        toggleSpeed(a);
+        return;
+      }
+
       held.add(a);
       startLoop();
     },
     onKeyUp: (_ctx, event) => {
       const a = toAction(event);
       if (!a) return;
+      if (a === "fast" || a === "slow") { modDown.delete(a); return; }
       held.delete(a);
     },
-    onDeactivate: () => { held.clear(); },
+    onDeactivate: () => { held.clear(); modDown.clear(); },
   });
 });

@@ -7,10 +7,10 @@ Ative a ferramenta "Câmera Cinema" na barra lateral (ou aperte `C`).
 
 | Tecla | Ação |
 |---|---|
-| Setas | Mover a câmera |
-| `Q` / `E` ou `-` / `+` | Zoom out / zoom in |
-| `Shift` | Mais rápido |
-| `Alt` | Mais lento e preciso |
+| `W` `A` `S` `D` (ou setas) | Mover a câmera |
+| `Z` / `X` | Zoom in / zoom out |
+| `Shift` (toque único) | Liga/desliga câmera rápida |
+| `Alt` (toque único) | Liga/desliga câmera lenta |
 | `R` ou `Home` | Resetar a vista |
 
 Os valores de velocidade, inércia e fricção ficam em `CFG` no começo de `src/background.js`.
