@@ -6,7 +6,10 @@ export default defineConfig({
   server: { cors: true, port: 5173 },
   build: {
     rollupOptions: {
-      input: "background.html",
+      input: {
+        background: "background.html",
+        hud: "hud.html",
+      },
     },
   },
 });
