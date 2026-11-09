@@ -2,15 +2,12 @@ import OBR from "@owlbear-rodeo/sdk";
 
 const ID = "io.github.blackcode1242.camera-cinema";
 const ICON = new URL("icon.svg", window.location.href).href;
-const HUD_URL = new URL("hud.html", window.location.href).href;
+const FADE_URL = new URL("fade.html", window.location.href).href;
 
 const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
-const HUD_ID = `${ID}/hud`;
 const FADE_ID = `${ID}/fade`;
 const CH_CAM = `${ID}/cam`;              // mestre -> jogadores
-const CH_HUD = `${ID}/hud-state`;        // fundo -> indicador (local)
-const CH_HUD_READY = `${ID}/hud-ready`;  // indicador -> fundo (local)
 
 // ====== CONFIGURAÇÃO (ajuste ao gosto) ======
 const CFG = {
@@ -44,18 +41,13 @@ const CFG = {
   boundsDefault: true,  // começa ligado?
   boundsMargin: 0.1,    // quanto pode passar da borda (fração do tamanho do mapa)
 
-  // inércia do scroll (observa o zoom nativo e continua o movimento)
-  wheelGlide: { enabled: true, pollMs: 60, minRate: 0.3, gain: 0.9 },
-
   // corte animado ao trocar de cena
   intro: { enabled: true, fade: true, fadeMs: 1100, flyMs: 2600, startZoom: 1.6, padding: 1.15, delay: 300 },
 
-  // indicador na tela
-  hud: { enabled: true, bottom: 24 },
 };
 
 // ====== MAPA DE TECLAS (troque aqui pelas teclas que preferir) ======
-// Teclas que já têm atalho no Owlbear (evitar): W S D F M Q T
+// Teclas que já têm atalho no Owlbear (evitar): W S D F H M Q T
 // Use o nome da tecla em "code": KeyA..KeyZ, Digit0..Digit9, ArrowUp, Home, Space, etc.
 const KEYMAP = {
   up:       ["KeyI", "ArrowUp"],
@@ -65,10 +57,10 @@ const KEYMAP = {
   zoomIn:   ["KeyZ"],
   zoomOut:  ["KeyX"],
   fast:     ["ShiftLeft", "ShiftRight"],  // liga/desliga
-  slow:     ["AltLeft", "AltRight"],      // liga/desliga
+  slow:     ["ControlLeft", "ControlRight"], // liga/desliga
   reset:    ["KeyR", "Home"],             // enquadra o mapa inteiro
   follow:   ["KeyG"],                     // seguir o token selecionado
-  dolly:    ["KeyH"],                     // foco dramático / voltar
+  dolly:    ["KeyY"],                     // foco dramático / voltar
   bounds:   ["KeyB"],                     // liga/desliga limites do mapa
   followGM: ["KeyN"],                     // seguir o mestre (jogadores)
   look:     ["KeyU"],                     // mestre: "olhem isso"
@@ -97,7 +89,6 @@ function notify(msg, variant = "DEFAULT") {
 const held = new Set();       // direções/zoom segurados
 const keyDown = new Map();    // teclas de um toque já apertadas (evita auto-repeat)
 let speedMode = null;         // null | "fast" | "slow"
-let modeActive = false;
 let role = "PLAYER";
 
 // câmera: centro em coordenadas do mundo + escala (a posição da tela é derivada)
@@ -119,12 +110,6 @@ let mapBounds = null;
 let boundsOn = CFG.boundsDefault;
 let unsubItems = null, boundsDebounce = null;
 
-let lastPointerWorld = null;  // para ancorar a inércia do scroll no cursor
-let glideActive = false, glideAnchor = null, lastExtCheck = 0, extChecking = false;
-const wheel = { lastScale: null, lastT: 0, vz: 0, moving: false };
-let wheelTimer = null;
-
-let hudOpen = false, hudTimer = null, lastHudJson = "";
 
 // ====== TECLAS ======
 function toAction(ev) {
@@ -133,7 +118,7 @@ function toAction(ev) {
   const code =
     k.length === 1 && /[a-z]/i.test(k) ? "Key" + k.toUpperCase() :
     k === "Shift" ? "ShiftLeft" :
-    k === "Alt" ? "AltLeft" : k;
+    k === "Control" ? "ControlLeft" : k;
   return CODE_TO_ACTION.get(code) ?? null;
 }
 
@@ -183,24 +168,11 @@ function stopLoop() {
   running = false;
   startPromise = null;
   vx = vy = vz = 0;
-  glideActive = false;
-  glideAnchor = null;
-  wheel.lastScale = null;
-  wheel.moving = false;
 }
 
 // ====== ZOOM ======
-function zoomBy(dLn, anchor) {
-  const s0 = cam.scale;
-  const s1 = clamp(s0 * Math.exp(dLn), CFG.minScale, CFG.maxScale);
-  if (anchor) {
-    // mantém o ponto do mundo sob o cursor parado na tela
-    const px = cam.cx + (anchor.x - cam.w / 2) / s0;
-    const py = cam.cy + (anchor.y - cam.h / 2) / s0;
-    cam.cx = px - (anchor.x - cam.w / 2) / s1;
-    cam.cy = py - (anchor.y - cam.h / 2) / s1;
-  }
-  cam.scale = s1;
+function zoomBy(dLn) {
+  cam.scale = clamp(cam.scale * Math.exp(dLn), CFG.minScale, CFG.maxScale);
 }
 
 // ====== LIMITES DO MAPA ======
@@ -256,7 +228,6 @@ async function flyTo(t, duration, ease = easeInOutCubic) {
     t0: performance.now(), dur: Math.max(1, duration), ease,
   };
   vx = vy = vz = 0;
-  glideActive = false;
 }
 
 function cancelAuto() {
@@ -264,7 +235,6 @@ function cancelAuto() {
   gmTarget = null;
   if (followIds) { followIds = null; followTarget = null; notify("🎯 Seguir token: desativado"); }
   if (followGM) { followGM = false; notify("👁 Você parou de seguir o mestre (N para voltar)"); }
-  updateHudVisibility();
 }
 
 // ====== LOOP PRINCIPAL ======
@@ -324,14 +294,11 @@ function tick() {
     const quiet = Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5 && Math.abs(vz) < 0.001;
     if (quiet && !manual) {
       vx = vy = vz = 0;
-      glideActive = false;
-      glideAnchor = null;
     } else {
-      if (Math.abs(vz) > 0.0001) zoomBy(vz * dt, !dirZ && glideAnchor ? glideAnchor : null);
+      if (Math.abs(vz) > 0.0001) zoomBy(vz * dt);
       cam.cx += (vx * dt) / cam.scale;
       cam.cy += (vy * dt) / cam.scale;
       busy = true;
-      if (glideActive && !dirZ && now - lastExtCheck > 150) checkExternalZoom();
     }
   }
 
@@ -340,7 +307,6 @@ function tick() {
 
   if (!busy && !manual) {
     stopLoop();
-    pushHud();
   }
 }
 
@@ -355,7 +321,6 @@ async function fetchFollow() {
     followIds = null;
     followTarget = null;
     notify("🎯 O token seguido não existe mais", "WARNING");
-    updateHudVisibility();
   } finally {
     followFetching = false;
   }
@@ -366,7 +331,6 @@ async function toggleFollow() {
     followIds = null;
     followTarget = null;
     notify("🎯 Seguir token: desativado");
-    updateHudVisibility();
     return;
   }
   let ids = [];
@@ -379,7 +343,6 @@ async function toggleFollow() {
   await startLoop();
   await fetchFollow();
   if (followIds) notify("🎯 Seguindo o token selecionado (G para parar)", "SUCCESS");
-  updateHudVisibility();
 }
 
 // ====== FOCO DRAMÁTICO (DOLLY) ======
@@ -395,16 +358,15 @@ async function dolly() {
   }
   let ids = [];
   try { ids = await OBR.player.getSelection(); } catch { /* ignore */ }
-  if (!ids || !ids.length) { notify("Selecione um token ou área para o foco (H)", "WARNING"); return; }
+  if (!ids || !ids.length) { notify("Selecione um token ou área para o foco (Y)", "WARNING"); return; }
   let b;
   try { b = await OBR.scene.items.getItemBounds(ids); } catch { return; }
   followIds = null;
   dollyReturn = { cx: cam.cx, cy: cam.cy, scale: cam.scale };
   const fit = Math.min(cam.w / (Math.max(b.width, 1) * CFG.dollyPadding), cam.h / (Math.max(b.height, 1) * CFG.dollyPadding));
   const target = clamp(Math.min(fit, CFG.dollyMaxScale), CFG.minScale, CFG.maxScale);
-  notify("🎬 Foco dramático (H para voltar)");
+  notify("🎬 Foco dramático (Y para voltar)");
   await flyTo({ cx: b.center.x, cy: b.center.y, scale: target }, CFG.dollyDuration, easeInOutCubic);
-  updateHudVisibility();
 }
 
 // ====== LIMITES / VELOCIDADE / RESET ======
@@ -416,7 +378,6 @@ async function toggleBounds() {
   } else {
     notify("🔓 Limites do mapa: desativados");
   }
-  pushHud();
 }
 
 function toggleSpeed(mode) {
@@ -426,7 +387,6 @@ function toggleSpeed(mode) {
     speedMode === "slow" ? "🐢 Câmera lenta: ATIVADA" :
     "Velocidade normal";
   notify(msg, speedMode ? "SUCCESS" : "DEFAULT");
-  pushHud();
 }
 
 async function resetView() {
@@ -440,62 +400,6 @@ async function resetView() {
   } else {
     await flyTo({ cx: 0, cy: 0, scale: 1 }, 1400, easeInOutCubic);
   }
-  updateHudVisibility();
-}
-
-// ====== INÉRCIA DO SCROLL ======
-// O Owlbear não repassa o evento da roda do mouse para extensões. Então observamos o
-// zoom nativo e, quando o scroll para, continuamos o movimento com a mesma inércia.
-async function wheelWatch() {
-  if (!CFG.wheelGlide.enabled || !modeActive || running) return;
-  let s;
-  try { s = await OBR.viewport.getScale(); } catch { return; }
-  const t = performance.now();
-  if (wheel.lastScale == null) { wheel.lastScale = s; wheel.lastT = t; return; }
-  const dtw = (t - wheel.lastT) / 1000;
-  const rate = dtw > 0 ? Math.log(s / wheel.lastScale) / dtw : 0;
-  wheel.lastScale = s;
-  wheel.lastT = t;
-  if (Math.abs(rate) > CFG.wheelGlide.minRate) {
-    wheel.vz = wheel.vz * 0.5 + rate * 0.5;
-    wheel.moving = true;
-  } else if (wheel.moving) {
-    wheel.moving = false;
-    const v = wheel.vz * CFG.wheelGlide.gain;
-    wheel.vz = 0;
-    glideStart(v);
-  }
-}
-
-async function glideStart(v) {
-  if (running || Math.abs(v) < 0.05) return;
-  await startLoop();
-  vz = clamp(v, -3, 3);
-  glideActive = true;
-  glideAnchor = lastPointerWorld
-    ? {
-        x: (lastPointerWorld.x - cam.cx) * cam.scale + cam.w / 2,
-        y: (lastPointerWorld.y - cam.cy) * cam.scale + cam.h / 2,
-      }
-    : null;
-  lastExtCheck = performance.now();
-}
-
-// se o usuário voltar a girar a roda durante a inércia, cancela a nossa
-async function checkExternalZoom() {
-  if (extChecking) return;
-  extChecking = true;
-  lastExtCheck = performance.now();
-  try {
-    const s = await OBR.viewport.getScale();
-    if (Math.abs(Math.log(s / cam.scale)) > 0.02) {
-      vz = 0;
-      glideActive = false;
-      glideAnchor = null;
-      await syncFromViewport();
-    }
-  } catch { /* ignore */ }
-  extChecking = false;
 }
 
 // ====== CÂMERA DO MESTRE ======
@@ -518,13 +422,11 @@ async function toggleLive() {
     liveTimer = null;
     lastLive = null;
     notify("📡 Transmissão ao vivo: desligada");
-    updateHudVisibility();
     return;
   }
   liveTimer = setInterval(liveTick, CFG.liveMs);
   lastLive = null;
   notify("📡 Transmissão ao vivo: LIGADA", "SUCCESS");
-  updateHudVisibility();
 }
 
 async function liveTick() {
@@ -541,8 +443,6 @@ function toggleFollowGM() {
   followGM = !followGM;
   if (!followGM) gmTarget = null;
   notify(followGM ? "👁 Seguindo o mestre (N para parar)" : "👁 Parou de seguir o mestre", followGM ? "SUCCESS" : "DEFAULT");
-  updateHudVisibility();
-  pushHud();
 }
 
 async function onGmMessage(data) {
@@ -558,70 +458,6 @@ async function onGmMessage(data) {
   }
 }
 
-// ====== INDICADOR NA TELA (HUD) ======
-async function openHud() {
-  if (!CFG.hud.enabled || hudOpen) return;
-  hudOpen = true;
-  try {
-    const w = await OBR.viewport.getWidth();
-    const h = await OBR.viewport.getHeight();
-    await OBR.popover.open({
-      id: HUD_ID,
-      url: HUD_URL,
-      width: 380,
-      height: 44,
-      anchorReference: "POSITION",
-      anchorPosition: { left: w / 2, top: h - CFG.hud.bottom },
-      anchorOrigin: { horizontal: "CENTER", vertical: "BOTTOM" },
-      transformOrigin: { horizontal: "CENTER", vertical: "BOTTOM" },
-      hidePaper: true,
-      disableClickAway: true,
-      marginThickness: 0,
-    });
-  } catch (e) {
-    hudOpen = false;
-    console.warn("[Camera Cinema] não consegui abrir o indicador", e);
-    return;
-  }
-  lastHudJson = "";
-  hudTimer = setInterval(pushHud, 250);
-}
-
-function closeHud() {
-  if (!hudOpen) return;
-  hudOpen = false;
-  clearInterval(hudTimer);
-  hudTimer = null;
-  lastHudJson = "";
-  Promise.resolve(OBR.popover.close(HUD_ID)).catch(noop);
-}
-
-function updateHudVisibility() {
-  const want = CFG.hud.enabled && (modeActive || !!followIds || followGM || !!liveTimer);
-  if (want) openHud(); else closeHud();
-}
-
-async function pushHud() {
-  if (!hudOpen) return;
-  if (!running) {
-    try { cam.scale = await OBR.viewport.getScale(); } catch { /* ignore */ }
-  }
-  const state = {
-    zoom: Math.round(cam.scale * 100),
-    speed: speedMode,
-    follow: !!followIds,
-    dolly: !!dollyReturn,
-    gm: followGM,
-    live: !!liveTimer,
-    bounds: boundsOn && !!mapBounds,
-    role,
-  };
-  const json = JSON.stringify(state);
-  if (json === lastHudJson) return;
-  lastHudJson = json;
-  Promise.resolve(OBR.broadcast.sendMessage(CH_HUD, state, { destination: "LOCAL" })).catch(noop);
-}
-
 // ====== CORTE ANIMADO AO TROCAR DE CENA ======
 async function openFade() {
   try {
@@ -629,7 +465,7 @@ async function openFade() {
     const h = await OBR.viewport.getHeight();
     await OBR.popover.open({
       id: FADE_ID,
-      url: `${HUD_URL}#fade=${CFG.intro.fadeMs}`,
+      url: `${FADE_URL}#${CFG.intro.fadeMs}`,
       width: w,
       height: h,
       anchorReference: "POSITION",
@@ -681,7 +517,7 @@ const ACTIONS = {
 
 // ====== INICIALIZAÇÃO ======
 OBR.onReady(() => {
-  console.log("[Camera Cinema] carregada v6");
+  console.log("[Camera Cinema] carregada v7");
   window.addEventListener("blur", () => { held.clear(); keyDown.clear(); });
 
   // papel do jogador (mestre ou jogador)
@@ -691,7 +527,6 @@ OBR.onReady(() => {
   // mensagens do mestre e pedidos do indicador
   try {
     OBR.broadcast.onMessage(CH_CAM, (e) => onGmMessage(e.data));
-    OBR.broadcast.onMessage(CH_HUD_READY, () => { lastHudJson = ""; pushHud(); });
   } catch { /* ignore */ }
 
   // cena pronta: limites do mapa e corte animado
@@ -715,22 +550,9 @@ OBR.onReady(() => {
     id: MODE_ID,
     icons: [{ icon: ICON, label: "Câmera Cinema", filter: { activeTools: [TOOL_ID] } }],
     shortcut: "C",
-    onActivate: () => {
-      modeActive = true;
-      updateHudVisibility();
-      clearInterval(wheelTimer);
-      wheelTimer = setInterval(wheelWatch, CFG.wheelGlide.pollMs);
-    },
     onDeactivate: () => {
-      modeActive = false;
       held.clear();
       keyDown.clear();
-      clearInterval(wheelTimer);
-      wheelTimer = null;
-      updateHudVisibility();
-    },
-    onToolMove: (_ctx, event) => {
-      if (event && event.pointerPosition) lastPointerWorld = event.pointerPosition;
     },
     onKeyDown: (_ctx, event) => {
       const a = toAction(event);

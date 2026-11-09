@@ -8,7 +8,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: "background.html",
-        hud: "hud.html",
+        fade: "fade.html",
       },
     },
   },

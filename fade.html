@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Câmera Cinema</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      /* tela preta que some devagar (corte de cena); a duração vem do hash da URL */
+      body { animation: fadeOut var(--fade-ms, 1100ms) ease-in forwards; }
+      @keyframes fadeOut { 0% { opacity: 1; } 35% { opacity: 1; } 100% { opacity: 0; } }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="./src/fade.js"></script>
+  </body>
+</html>
