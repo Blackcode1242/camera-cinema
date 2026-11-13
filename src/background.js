@@ -120,6 +120,7 @@ let fadeOpened = false;
 let fadeOpening = null;
 let sceneGeneration = 0;
 let lastSceneReady = null;
+let sceneReadyEventReceived = false;
 
 
 // ====== TECLAS ======
@@ -649,9 +650,15 @@ OBR.onReady(() => {
 
   // cena pronta: uma única transição por mudança real de estado
   try {
-    OBR.scene.onReadyChange(handleSceneReady);
+    OBR.scene.onReadyChange((ready) => {
+      sceneReadyEventReceived = true;
+      handleSceneReady(ready);
+    });
     Promise.resolve(OBR.scene.isReady())
-      .then(handleSceneReady)
+      .then((ready) => {
+        // A live event always wins over the potentially stale initial snapshot.
+        if (!sceneReadyEventReceived) handleSceneReady(ready);
+      })
       .catch((error) => {
         console.error("[Camera Cinema] Não foi possível consultar o estado da cena", error);
         notify("Câmera Cinema: não foi possível detectar quando a cena ficou pronta.", "WARNING");
