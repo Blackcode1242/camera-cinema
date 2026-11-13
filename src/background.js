@@ -43,7 +43,7 @@ const CFG = {
   boundsMargin: 0.1,    // quanto pode passar da borda (fração do tamanho do mapa)
 
   // corte animado ao trocar de cena
-  intro: { enabled: true, fade: true, fadeMs: 1600, flyMs: 1600, startZoom: 1.7, padding: 1.15, delay: 0 },
+  intro: { enabled: true, fade: true, fadeMs: 500, flyMs: 1600, startZoom: 1.7, padding: 1.15, delay: 0 },
 
 };
 
@@ -644,10 +644,9 @@ async function introCut(generation) {
   if (!CFG.intro.enabled) return;
 
   try {
-    if (generation !== sceneGeneration) return;
-
-    // Ao ficar pronta, cena, limites e viewport são preparados em paralelo.
-    // Não existe espera de fade anterior nem atraso antes da revelação.
+    // A camada preta foi aberta assim que a cena anterior deixou de estar pronta.
+    // Mantemos esse preto durante todo o carregamento e só começamos a revelar
+    // depois que a nova cena terminou de carregar.
     const boundsTask = refreshBounds();
     const fadeTask = CFG.intro.fade ? openFade() : Promise.resolve(false);
     const viewportTask = Promise.all([
@@ -680,30 +679,28 @@ async function introCut(generation) {
     const startScale = clamp(fitScale * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
     const startPosition = viewportPositionFor(center, startScale, width, height);
 
-    // Posiciona a câmera fechada sob o preto. A partir do instante seguinte,
-    // o zoom-out e o fade-out são iniciados juntos e têm exatamente a mesma duração.
+    // Prepara a câmera por trás da tela preta. O jogador ainda não vê esse ajuste.
     await Promise.all([
       OBR.viewport.setScale(startScale),
       OBR.viewport.setPosition(startPosition),
     ]);
     if (generation !== sceneGeneration) return;
 
-    const startedAt = performance.now();
-    const from = { position: startPosition, scale: startScale, width, height, startedAt };
-    const revealTask = faded ? revealFade(CFG.intro.fadeMs) : Promise.resolve();
-    const zoomTask = animateViewportTransform(
+    // Etapa 1: revela a cena rapidamente. Só depois começa o zoom-out.
+    if (faded) await revealFade(CFG.intro.fadeMs);
+    if (generation !== sceneGeneration) return;
+
+    // Etapa 2: zoom-out independente, sem sincronizar com o fade.
+    await animateViewportTransform(
       target,
       CFG.intro.flyMs,
       generation,
-      easeInOutCubic,
-      from
+      easeInOutCubic
     );
-
-    await Promise.all([revealTask, zoomTask]);
   } catch (error) {
     console.error("[Camera Cinema] Falha na transição de entrada", error);
     notify(`Câmera Cinema: falha ao animar a entrada. ${error?.message ?? "Verifique o console."}`, "WARNING");
-    if (generation === sceneGeneration && fadeOpened) await revealFade(500);
+    if (generation === sceneGeneration && fadeOpened) await revealFade(300);
   }
 }
 
@@ -718,14 +715,17 @@ function handleSceneReady(ready) {
     subscribeItems();
     introCut(generation);
   } else {
+    // O carregamento nativo fica coberto por preto desde o início da troca.
+    // Não há zoom nem fade-out nesta etapa.
     stopLoop();
     anim = null;
     held.clear();
     mapBounds = null;
     unsubscribeItems();
 
-    // A transição é iniciada apenas quando a nova cena estiver pronta.
-    // Assim o tempo de carregamento do Owlbear não é somado ao tempo do fade.
+    if (CFG.intro.enabled && CFG.intro.fade) {
+      openFade();
+    }
   }
 }
 
