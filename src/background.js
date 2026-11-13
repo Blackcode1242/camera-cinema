@@ -43,7 +43,7 @@ const CFG = {
   boundsMargin: 0.1,    // quanto pode passar da borda (fração do tamanho do mapa)
 
   // corte animado ao trocar de cena
-  intro: { enabled: true, fade: true, fadeMs: 2200, flyMs: 2600, startZoom: 1.7, padding: 1.15, delay: 0, departureFadeMs: 650, departureFlyMs: 900, departureZoom: 1.45 },
+  intro: { enabled: true, fade: true, fadeMs: 1600, flyMs: 1600, startZoom: 1.7, padding: 1.15, delay: 0 },
 
 };
 
@@ -118,12 +118,7 @@ let fadePendingReveal = false;
 let fadeReadyResolve = null;
 let fadeOpened = false;
 let fadeOpening = null;
-let fadePendingCoverDuration = null;
-let fadeCoverTask = null;
-let departureTask = null;
 let fadeRevealResolve = null;
-let fadeCoverResolve = null;
-let hasActiveScene = false;
 let sceneGeneration = 0;
 let lastSceneReady = null;
 let sceneReadyEventReceived = false;
@@ -483,30 +478,17 @@ function initFadeChannel() {
   try {
     fadeChannel = new BroadcastChannel(FADE_CHANNEL);
     fadeChannel.addEventListener("message", (event) => {
-      const type = event.data?.type;
-
-      if (type === "ready") {
+      if (event.data?.type === "ready") {
         fadeFrameReady = true;
         fadeChannel?.postMessage({ type: "ready-ack" });
         fadeReadyResolve?.();
         fadeReadyResolve = null;
 
-        if (fadePendingCoverDuration !== null) {
-          const duration = fadePendingCoverDuration;
-          fadePendingCoverDuration = null;
-          fadeChannel.postMessage({ type: "cover", duration });
-        }
         if (fadePendingReveal) {
           fadePendingReveal = false;
           fadeChannel.postMessage({ type: "reveal", duration: CFG.intro.fadeMs });
         }
-        return;
-      }
-
-      if (type === "covered") {
-        fadeCoverResolve?.();
-        fadeCoverResolve = null;
-      } else if (type === "revealed") {
+      } else if (event.data?.type === "revealed") {
         fadeRevealResolve?.();
         fadeRevealResolve = null;
       }
@@ -516,7 +498,7 @@ function initFadeChannel() {
   }
 }
 
-async function openFade({ transparentStart = false } = {}) {
+async function openFade() {
   if (fadeOpened) return true;
   if (fadeOpening) return fadeOpening;
 
@@ -525,11 +507,10 @@ async function openFade({ transparentStart = false } = {}) {
       initFadeChannel();
       fadeFrameReady = false;
       const readySignal = new Promise((resolve) => { fadeReadyResolve = resolve; });
-      const startMode = transparentStart ? "?start=transparent" : "";
 
       await OBR.modal.open({
         id: FADE_ID,
-        url: `${FADE_URL}${startMode}#${CFG.intro.fadeMs}`,
+        url: `${FADE_URL}#${CFG.intro.fadeMs}`,
         fullScreen: true,
         hideBackdrop: true,
         hidePaper: true,
@@ -537,15 +518,11 @@ async function openFade({ transparentStart = false } = {}) {
       });
 
       fadeOpened = true;
-      // O iframe confirma quando a camada já está desenhada; a página de fade
-      // repete o sinal até receber o ready-ack, evitando perder o primeiro post.
       const ready = await Promise.race([
         readySignal.then(() => true),
         sleep(1200).then(() => false),
       ]);
-      if (!ready) {
-        throw new Error("A camada de transição não confirmou que está pronta.");
-      }
+      if (!ready) throw new Error("A camada de transição não confirmou que está pronta.");
       return true;
     } catch (error) {
       console.error("[Camera Cinema] Falha ao abrir a camada de transição", error);
@@ -567,25 +544,6 @@ async function openFade({ transparentStart = false } = {}) {
   return fadeOpening;
 }
 
-function coverFade(duration = CFG.intro.departureFadeMs) {
-  if (!fadeOpened) return Promise.resolve();
-
-  if (!fadeFrameReady) {
-    fadePendingCoverDuration = duration;
-    return sleep(duration + 100);
-  }
-
-  const covered = new Promise((resolve) => { fadeCoverResolve = resolve; });
-  fadeChannel?.postMessage({ type: "cover", duration });
-
-  const task = Promise.race([covered, sleep(duration + 500)]).finally(() => {
-    fadeCoverResolve = null;
-    if (fadeCoverTask === task) fadeCoverTask = null;
-  });
-  fadeCoverTask = task;
-  return task;
-}
-
 async function revealFade(duration = CFG.intro.fadeMs) {
   if (fadeOpening) await fadeOpening;
   if (!fadeOpened) return;
@@ -597,8 +555,6 @@ async function revealFade(duration = CFG.intro.fadeMs) {
     fadePendingReveal = true;
   }
 
-  // Fecha o modal assim que o próprio iframe confirmar que o fade terminou.
-  // O timeout é apenas uma proteção contra falha do navegador/iframe.
   await Promise.race([revealed, sleep(duration + 900)]);
   fadeRevealResolve = null;
 
@@ -608,10 +564,7 @@ async function revealFade(duration = CFG.intro.fadeMs) {
   fadeOpened = false;
   fadeFrameReady = false;
   fadePendingReveal = false;
-  fadePendingCoverDuration = null;
   fadeReadyResolve = null;
-  fadeCoverResolve = null;
-  fadeCoverTask = null;
   try { fadeChannel?.close(); } catch { /* ignore */ }
   fadeChannel = null;
 }
@@ -623,24 +576,38 @@ function viewportPositionFor(center, scale, width, height) {
   };
 }
 
-async function animateViewportTransform(target, duration, generation, ease = easeInOutCubic) {
-  const [startPosition, startScale, width, height] = await Promise.all([
-    OBR.viewport.getPosition(),
-    OBR.viewport.getScale(),
-    OBR.viewport.getWidth(),
-    OBR.viewport.getHeight(),
-  ]);
+async function animateViewportTransform(
+  target,
+  duration,
+  generation,
+  ease = easeInOutCubic,
+  from = null
+) {
+  let startPosition;
+  let startScale;
+  let width;
+  let height;
+  let startedAt;
+
+  if (from) {
+    ({ position: startPosition, scale: startScale, width, height, startedAt } = from);
+  } else {
+    [startPosition, startScale, width, height] = await Promise.all([
+      OBR.viewport.getPosition(),
+      OBR.viewport.getScale(),
+      OBR.viewport.getWidth(),
+      OBR.viewport.getHeight(),
+    ]);
+    startedAt = performance.now();
+  }
 
   if (!width || !height || !Number.isFinite(startScale) || !target?.position || !Number.isFinite(target.scale)) {
     throw new Error("O Owlbear não retornou uma transformação de câmera válida.");
   }
 
-  const startedAt = performance.now();
   const totalDuration = Math.max(1, duration);
   let progress = 0;
 
-  // Envia transformações reais ao Owlbear em passos regulares. animateTo()
-  // não oferece controle de duração; esta interpolação permite o timing cinematográfico.
   while (progress < 1) {
     if (generation !== sceneGeneration) return false;
 
@@ -658,8 +625,7 @@ async function animateViewportTransform(target, duration, generation, ease = eas
       OBR.viewport.setScale(scale),
       OBR.viewport.setPosition(position),
     ]);
-
-    if (progress < 1) await sleep(33);
+    if (progress < 1) await sleep(16);
   }
 
   if (generation === sceneGeneration) {
@@ -667,93 +633,32 @@ async function animateViewportTransform(target, duration, generation, ease = eas
       OBR.viewport.setScale(target.scale),
       OBR.viewport.setPosition(target.position),
     ]);
-    try { await syncFromViewport(); } catch { /* cena pode ter começado a trocar */ }
+    try { await syncFromViewport(); } catch { /* cena pode estar trocando */ }
     return true;
   }
 
   return false;
 }
 
-async function departureCut(generation, previousBounds) {
-  if (!CFG.intro.enabled) return;
-
-  try {
-    stopLoop();
-    anim = null;
-    held.clear();
-
-    const opened = CFG.intro.fade
-      ? await openFade({ transparentStart: true })
-      : true;
-
-    if (opened && CFG.intro.fade) {
-      // Enquanto a câmera aproxima, a camada preta fecha gradualmente.
-      // Assim o corte não esconde instantaneamente o movimento de saída.
-      fadeCoverTask = coverFade(CFG.intro.departureFadeMs);
-    }
-
-    const [position, scale, width, height] = await Promise.all([
-      OBR.viewport.getPosition(),
-      OBR.viewport.getScale(),
-      OBR.viewport.getWidth(),
-      OBR.viewport.getHeight(),
-    ]);
-
-    const currentCenter = {
-      x: (width / 2 - position.x) / scale,
-      y: (height / 2 - position.y) / scale,
-    };
-    const focus = previousBounds?.center ?? currentCenter;
-    const targetScale = clamp(scale * CFG.intro.departureZoom, CFG.minScale, CFG.maxScale);
-    const target = {
-      scale: targetScale,
-      position: viewportPositionFor(focus, targetScale, width, height),
-    };
-
-    const zoomTask = animateViewportTransform(
-      target,
-      CFG.intro.departureFlyMs,
-      generation,
-      easeInOutCubic
-    ).catch((error) => {
-      console.warn("[Camera Cinema] O zoom de saída não pôde terminar antes da troca", error);
-      return false;
-    });
-
-    await Promise.all([
-      zoomTask,
-      fadeCoverTask ?? Promise.resolve(),
-    ]);
-  } catch (error) {
-    console.warn("[Camera Cinema] Não foi possível animar a saída da cena", error);
-    // Mesmo se a câmera já tiver sido descarregada, preserva o corte preto.
-    if (CFG.intro.fade) {
-      const opened = await openFade();
-      if (opened) await coverFade(CFG.intro.departureFadeMs);
-    }
-  }
-}
-
 async function introCut(generation) {
   if (!CFG.intro.enabled) return;
 
   try {
-    if (CFG.intro.delay > 0) await sleep(CFG.intro.delay);
     if (generation !== sceneGeneration) return;
 
-    await refreshBounds();
-
-    // No primeiro carregamento abre preto; ao trocar de cena reutiliza a
-    // cobertura que foi fechada durante o zoom-in da cena anterior.
-    const faded = CFG.intro.fade ? await openFade() : false;
-    // Não esperar a cortina fechar por completo: o fade-out reverte a opacidade
-    // atual e começa junto com o zoom-out assim que a cena está pronta.
-    if (generation !== sceneGeneration) return;
-
-    const [width, height] = await Promise.all([
+    // Ao ficar pronta, cena, limites e viewport são preparados em paralelo.
+    // Não existe espera de fade anterior nem atraso antes da revelação.
+    const boundsTask = refreshBounds();
+    const fadeTask = CFG.intro.fade ? openFade() : Promise.resolve(false);
+    const viewportTask = Promise.all([
       OBR.viewport.getWidth(),
       OBR.viewport.getHeight(),
     ]);
+
+    const [faded] = await Promise.all([fadeTask, boundsTask, viewportTask]);
+    if (generation !== sceneGeneration) return;
+
+    const [width, height] = await viewportTask;
     if (!width || !height) throw new Error("Não foi possível ler o tamanho da câmera.");
 
     const center = mapBounds?.center ?? { x: 0, y: 0 };
@@ -775,28 +680,30 @@ async function introCut(generation) {
     const startScale = clamp(fitScale * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
     const startPosition = viewportPositionFor(center, startScale, width, height);
 
-    // A câmera começa aproximada, por trás da tela preta, e se afasta
-    // enquanto o preto se dissolve. Não existe reset instantâneo aqui.
+    // Posiciona a câmera fechada sob o preto. A partir do instante seguinte,
+    // o zoom-out e o fade-out são iniciados juntos e têm exatamente a mesma duração.
     await Promise.all([
       OBR.viewport.setScale(startScale),
       OBR.viewport.setPosition(startPosition),
     ]);
     if (generation !== sceneGeneration) return;
 
+    const startedAt = performance.now();
+    const from = { position: startPosition, scale: startScale, width, height, startedAt };
     const revealTask = faded ? revealFade(CFG.intro.fadeMs) : Promise.resolve();
     const zoomTask = animateViewportTransform(
       target,
       CFG.intro.flyMs,
       generation,
-      easeInOutCubic
+      easeInOutCubic,
+      from
     );
 
-    await Promise.all([zoomTask, revealTask]);
+    await Promise.all([revealTask, zoomTask]);
   } catch (error) {
-    console.error("[Camera Cinema] Falha na introdução da cena", error);
-    notify(`Câmera Cinema: falha ao enquadrar a cena. ${error?.message ?? "Verifique o console."}`, "WARNING");
-
-    if (generation === sceneGeneration && fadeOpened) await revealFade();
+    console.error("[Camera Cinema] Falha na transição de entrada", error);
+    notify(`Câmera Cinema: falha ao animar a entrada. ${error?.message ?? "Verifique o console."}`, "WARNING");
+    if (generation === sceneGeneration && fadeOpened) await revealFade(500);
   }
 }
 
@@ -808,22 +715,17 @@ function handleSceneReady(ready) {
   console.log("[Camera Cinema] Estado da cena:", ready ? "pronta" : "carregando");
 
   if (ready) {
-    hasActiveScene = true;
     subscribeItems();
-    departureTask = null;
     introCut(generation);
   } else {
-    const previousBounds = mapBounds;
-    const wasInActiveScene = hasActiveScene;
-    hasActiveScene = false;
+    stopLoop();
+    anim = null;
+    held.clear();
     mapBounds = null;
     unsubscribeItems();
 
-    // O SDK sinaliza a saída da cena quando seu estado muda para não pronta.
-    // Nesse momento tentamos aproximar a câmera e fechar a cortina preta.
-    if (CFG.intro.enabled && wasInActiveScene) {
-      departureTask = departureCut(generation, previousBounds);
-    }
+    // A transição é iniciada apenas quando a nova cena estiver pronta.
+    // Assim o tempo de carregamento do Owlbear não é somado ao tempo do fade.
   }
 }
 
