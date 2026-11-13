@@ -1,43 +1,81 @@
-// Camada de transição: preta por padrão; pode começar transparente para
-// que o zoom-in de saída e o escurecimento aconteçam ao mesmo tempo.
-const durationFromHash = parseInt(location.hash.slice(1), 10);
+// Camada de transição cinematográfica. A opacidade pode ser revertida em
+// qualquer ponto, sem esperar a cobertura preta terminar antes de revelar.
+const durationFromHash = Number.parseInt(location.hash.slice(1), 10);
 const startTransparent = new URLSearchParams(location.search).get("start") === "transparent";
 const channel = new BroadcastChannel("io.github.blackcode1242.camera-cinema/fade-control");
-const easing = "cubic-bezier(0.65, 0, 0.35, 1)";
+const easing = "cubic-bezier(0.42, 0, 0.58, 1)";
+let activeAnimation = null;
 
 document.documentElement.style.background = "transparent";
 document.body.style.background = "#000";
 document.body.style.opacity = startTransparent ? "0" : "1";
-document.body.style.transition = "none";
 
-function transitionOpacity(opacity, requestedDuration) {
+function animateOpacity(targetOpacity, requestedDuration, acknowledgement) {
   const duration = Number.isFinite(requestedDuration)
     ? Math.max(0, requestedDuration)
-    : durationFromHash > 0 ? durationFromHash : 3600;
+    : durationFromHash > 0 ? durationFromHash : 2200;
 
-  document.body.style.transition = `opacity ${duration}ms ${easing}`;
+  const currentOpacity = Number.parseFloat(getComputedStyle(document.body).opacity);
+  const fromOpacity = Number.isFinite(currentOpacity)
+    ? currentOpacity
+    : (startTransparent ? 0 : 1);
 
-  // Garante que o estado inicial foi pintado antes de iniciar a transição.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.body.style.opacity = String(opacity);
-    });
-  });
+  // Caso a cena fique pronta no meio do fade-in para preto, cancela essa
+  // animação no frame atual e inverte de onde ela realmente estiver.
+  if (activeAnimation) {
+    activeAnimation.cancel();
+    activeAnimation = null;
+  }
 
-  return duration;
-}
+  if (typeof document.body.animate === "function") {
+    const animation = document.body.animate(
+      [{ opacity: fromOpacity }, { opacity: targetOpacity }],
+      {
+        duration,
+        easing,
+        fill: "forwards",
+      }
+    );
+    activeAnimation = animation;
 
-channel.addEventListener("message", (event) => {
-  if (event.data?.type === "cover") {
-    transitionOpacity(1, event.data.duration);
+    animation.onfinish = () => {
+      document.body.style.opacity = String(targetOpacity);
+      if (activeAnimation === animation) activeAnimation = null;
+      animation.cancel();
+      channel.postMessage({ type: acknowledgement });
+    };
+    animation.oncancel = () => {
+      if (activeAnimation === animation) activeAnimation = null;
+    };
     return;
   }
 
-  if (event.data?.type === "reveal") {
-    const duration = transitionOpacity(0, event.data.duration);
-    window.setTimeout(() => channel.close(), duration + 500);
+  // Fallback para engines sem Web Animations API.
+  document.body.style.opacity = String(targetOpacity);
+  window.setTimeout(() => channel.postMessage({ type: acknowledgement }), duration);
+}
+
+// Reenvia "ready" até o background confirmar que recebeu o handshake.
+// Assim a primeira mensagem não se perde durante a criação do modal.
+const readyTimer = window.setInterval(() => {
+  channel.postMessage({ type: "ready" });
+}, 120);
+channel.postMessage({ type: "ready" });
+
+channel.addEventListener("message", (event) => {
+  const type = event.data?.type;
+
+  if (type === "ready-ack") {
+    window.clearInterval(readyTimer);
+    return;
+  }
+
+  if (type === "cover") {
+    animateOpacity(1, event.data.duration, "covered");
+    return;
+  }
+
+  if (type === "reveal") {
+    animateOpacity(0, event.data.duration, "revealed");
   }
 });
-
-// Handshake para o background esperar até a camada estar renderizada.
-channel.postMessage({ type: "ready" });
