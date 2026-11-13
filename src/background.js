@@ -118,6 +118,7 @@ let fadePendingReveal = false;
 let fadeReadyResolve = null;
 let fadeOpened = false;
 let fadeOpening = null;
+let introRunning = false;
 
 
 // ====== TECLAS ======
@@ -500,18 +501,15 @@ async function openFade() {
         OBR.viewport.getWidth(),
         OBR.viewport.getHeight(),
       ]);
-      await OBR.popover.open({
+      await OBR.modal.open({
         id: FADE_ID,
         url: `${FADE_URL}#${CFG.intro.fadeMs}`,
         width: w,
         height: h,
-        anchorReference: "POSITION",
-        anchorPosition: { left: 0, top: 0 },
-        anchorOrigin: { horizontal: "LEFT", vertical: "TOP" },
-        transformOrigin: { horizontal: "LEFT", vertical: "TOP" },
+        fullScreen: true,
+        hideBackdrop: true,
         hidePaper: true,
-        disableClickAway: true,
-        marginThreshold: 0,
+        disablePointerEvents: true,
       });
       fadeOpened = true;
       // O iframe confirma quando já está pronto para receber o comando de clarear.
@@ -538,9 +536,9 @@ async function revealFade() {
     fadePendingReveal = true;
   }
 
-  // Mantém o popover aberto durante a animação de clareamento.
+  // Mantém a camada em tela cheia durante a animação de clareamento.
   await sleep(CFG.intro.fadeMs + 250);
-  try { await OBR.popover.close(FADE_ID); } catch { /* ignore */ }
+  try { await OBR.modal.close(FADE_ID); } catch { /* ignore */ }
   fadeOpened = false;
   fadeFrameReady = false;
   fadePendingReveal = false;
@@ -550,23 +548,27 @@ async function revealFade() {
 }
 
 async function introCut() {
-  if (!CFG.intro.enabled) return;
-  await sleep(CFG.intro.delay);
-  await refreshBounds();
-  if (!mapBounds) return;
-  const faded = CFG.intro.fade ? await openFade() : false;
-  await startLoop();
-  const fit = fitScaleFor(mapBounds, CFG.intro.padding);
-  anim = null;
-  followIds = null;
-  dollyReturn = null;
-  cam.cx = mapBounds.center.x;
-  cam.cy = mapBounds.center.y;
-  cam.scale = clamp(fit * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
-  push();
-  await flyTo({ cx: mapBounds.center.x, cy: mapBounds.center.y, scale: fit }, CFG.intro.flyMs, easeOutCubic);
-  // Só revela a nova cena depois que o enquadramento cinematográfico terminar.
-  if (faded) await revealFade();
+  if (!CFG.intro.enabled || introRunning) return;
+  introRunning = true;
+  try {
+    await sleep(CFG.intro.delay);
+    await refreshBounds();
+    if (!mapBounds) return;
+    const faded = CFG.intro.fade ? await openFade() : false;
+    await startLoop();
+    const fit = fitScaleFor(mapBounds, CFG.intro.padding);
+    anim = null;
+    followIds = null;
+    dollyReturn = null;
+    cam.cx = mapBounds.center.x;
+    cam.cy = mapBounds.center.y;
+    cam.scale = clamp(fit * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
+    push();
+    await flyTo({ cx: mapBounds.center.x, cy: mapBounds.center.y, scale: fit }, CFG.intro.flyMs, easeOutCubic);
+    if (faded) await revealFade();
+  } finally {
+    introRunning = false;
+  }
 }
 
 // ====== AÇÕES DE UM TOQUE ======
@@ -611,8 +613,11 @@ OBR.onReady(() => {
         if (CFG.intro.enabled && CFG.intro.fade) openFade();
       }
     });
-    Promise.resolve(OBR.scene.isReady()).then(async (ready) => {
-      if (ready) { subscribeItems(); await refreshBounds(); }
+    Promise.resolve(OBR.scene.isReady()).then((ready) => {
+      if (ready) {
+        subscribeItems();
+        introCut();
+      }
     }).catch(noop);
   } catch { /* ignore */ }
 
