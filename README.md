@@ -225,7 +225,7 @@ npm install
 npm run dev
 ```
 
-Adicione `http://localhost:5173/manifest.json` como extensão no Owlbear. Para gerar o build: `npm run build` (saída em `dist/`).
+Adicione `http://localhost:5173/manifest.local.json` como extensão no Owlbear. Esse manifesto aponta para o servidor local; não o use como manifesto publicado. Para gerar o build: `npm run build` (saída em `dist/`).
 
 Em desenvolvimento, os caminhos do `manifest.json` precisam apontar para o servidor local, ou use caminhos relativos se o seu Owlbear os resolver.
 
