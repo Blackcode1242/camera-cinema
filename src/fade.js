@@ -6,7 +6,7 @@ const channel = new BroadcastChannel("io.github.blackcode1242.camera-cinema/fade
 const easing = "cubic-bezier(0.4, 0, 0.2, 1)";
 let activeAnimation = null;
 
-document.documentElement.style.background = "transparent";
+document.documentElement.style.background = "#000";
 document.body.style.background = "#000";
 document.body.style.opacity = "1";
 
