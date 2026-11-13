@@ -3,7 +3,7 @@
 const durationFromHash = parseInt(location.hash.slice(1), 10);
 const channel = new BroadcastChannel("io.github.blackcode1242.camera-cinema/fade-control");
 
-document.documentElement.style.background = "#000";
+document.documentElement.style.background = "transparent";
 document.body.style.background = "#000";
 document.body.style.opacity = "1";
 
