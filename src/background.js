@@ -7,6 +7,7 @@ const FADE_URL = new URL("fade.html", window.location.href).href;
 const TOOL_ID = `${ID}/tool`;
 const MODE_ID = `${ID}/mode`;
 const FADE_ID = `${ID}/fade`;
+const FADE_CHANNEL = `${ID}/fade-control`;
 const CH_CAM = `${ID}/cam`;              // mestre -> jogadores
 
 // ====== CONFIGURAÇÃO (ajuste ao gosto) ======
@@ -109,6 +110,14 @@ let liveTimer = null, lastLive = null;
 let mapBounds = null;
 let boundsOn = CFG.boundsDefault;
 let unsubItems = null, boundsDebounce = null;
+
+// Controle da camada preta entre a página de fundo e o iframe do popover.
+let fadeChannel = null;
+let fadeFrameReady = false;
+let fadePendingReveal = false;
+let fadeReadyResolve = null;
+let fadeOpened = false;
+let fadeOpening = null;
 
 
 // ====== TECLAS ======
@@ -459,28 +468,85 @@ async function onGmMessage(data) {
 }
 
 // ====== CORTE ANIMADO AO TROCAR DE CENA ======
-async function openFade() {
+function initFadeChannel() {
+  if (fadeChannel) return;
   try {
-    const w = await OBR.viewport.getWidth();
-    const h = await OBR.viewport.getHeight();
-    await OBR.popover.open({
-      id: FADE_ID,
-      url: `${FADE_URL}#${CFG.intro.fadeMs}`,
-      width: w,
-      height: h,
-      anchorReference: "POSITION",
-      anchorPosition: { left: 0, top: 0 },
-      anchorOrigin: { horizontal: "LEFT", vertical: "TOP" },
-      transformOrigin: { horizontal: "LEFT", vertical: "TOP" },
-      hidePaper: true,
-      disableClickAway: true,
-      marginThickness: 0,
+    fadeChannel = new BroadcastChannel(FADE_CHANNEL);
+    fadeChannel.addEventListener("message", (event) => {
+      if (event.data?.type !== "ready") return;
+      fadeFrameReady = true;
+      fadeReadyResolve?.();
+      fadeReadyResolve = null;
+      if (fadePendingReveal) {
+        fadePendingReveal = false;
+        fadeChannel.postMessage({ type: "reveal", duration: CFG.intro.fadeMs });
+      }
     });
-    await sleep(250); // dá tempo da tela preta carregar antes de mexer na câmera
-    return true;
-  } catch {
-    return false;
+  } catch (error) {
+    console.warn("[Camera Cinema] Não foi possível iniciar o canal do fade", error);
   }
+}
+
+async function openFade() {
+  if (fadeOpened) return true;
+  if (fadeOpening) return fadeOpening;
+
+  fadeOpening = (async () => {
+    try {
+      initFadeChannel();
+      fadeFrameReady = false;
+      const readySignal = new Promise((resolve) => { fadeReadyResolve = resolve; });
+      const [w, h] = await Promise.all([
+        OBR.viewport.getWidth(),
+        OBR.viewport.getHeight(),
+      ]);
+      await OBR.popover.open({
+        id: FADE_ID,
+        url: `${FADE_URL}#${CFG.intro.fadeMs}`,
+        width: w,
+        height: h,
+        anchorReference: "POSITION",
+        anchorPosition: { left: 0, top: 0 },
+        anchorOrigin: { horizontal: "LEFT", vertical: "TOP" },
+        transformOrigin: { horizontal: "LEFT", vertical: "TOP" },
+        hidePaper: true,
+        disableClickAway: true,
+        marginThreshold: 0,
+      });
+      fadeOpened = true;
+      // O iframe confirma quando já está pronto para receber o comando de clarear.
+      await Promise.race([readySignal, sleep(2000)]);
+      return true;
+    } catch (error) {
+      console.warn("[Camera Cinema] Falha ao abrir a camada preta", error);
+      return false;
+    } finally {
+      fadeOpening = null;
+    }
+  })();
+
+  return fadeOpening;
+}
+
+async function revealFade() {
+  if (fadeOpening) await fadeOpening;
+  if (!fadeOpened) return;
+
+  if (fadeFrameReady) {
+    fadeChannel?.postMessage({ type: "reveal", duration: CFG.intro.fadeMs });
+  } else {
+    fadePendingReveal = true;
+  }
+
+  // Mantém o popover aberto durante a animação de clareamento.
+  await sleep(CFG.intro.fadeMs + 250);
+  try { await OBR.popover.close(FADE_ID); } catch { /* ignore */ }
+  fadeOpened = false;
+  fadeFrameReady = false;
+  fadePendingReveal = false;
+  fadeReadyResolve = null;
+  try { fadeChannel?.close(); } catch { /* ignore */ }
+  fadeChannel = null;
 }
 
 async function introCut() {
@@ -532,8 +598,17 @@ OBR.onReady(() => {
   // cena pronta: limites do mapa e corte animado
   try {
     OBR.scene.onReadyChange((ready) => {
-      if (ready) { subscribeItems(); introCut(); }
-      else { mapBounds = null; unsubscribeItems(); }
+      if (ready) {
+        subscribeItems();
+        // Nesta etapa, isolamos o teste da cobertura: a câmera ainda não se move.
+        if (CFG.intro.enabled && CFG.intro.fade) revealFade();
+        else introCut();
+      } else {
+        mapBounds = null;
+        unsubscribeItems();
+        // Abre a cobertura assim que o Owlbear sinaliza que a cena deixou de estar pronta.
+        if (CFG.intro.enabled && CFG.intro.fade) openFade();
+      }
     });
     Promise.resolve(OBR.scene.isReady()).then(async (ready) => {
       if (ready) { subscribeItems(); await refreshBounds(); }
