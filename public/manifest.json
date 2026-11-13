@@ -1,9 +1,9 @@
 {
   "name": "Câmera Cinematográfica",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "manifest_version": 1,
   "author": "Blackcode1242",
-  "description": "Movimento fluido de câmera com setas e zoom dinâmico.",
+  "description": "Movimento cinematográfico de câmera, com transições suaves entre cenas.",
   "icon": "https://blackcode1242.github.io/camera-cinema/icon.svg",
   "background_url": "https://blackcode1242.github.io/camera-cinema/background.html"
 }
