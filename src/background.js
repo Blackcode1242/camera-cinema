@@ -565,7 +565,8 @@ async function introCut() {
   cam.scale = clamp(fit * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
   push();
   await flyTo({ cx: mapBounds.center.x, cy: mapBounds.center.y, scale: fit }, CFG.intro.flyMs, easeOutCubic);
-  if (faded) setTimeout(() => Promise.resolve(OBR.popover.close(FADE_ID)).catch(noop), CFG.intro.fadeMs + 400);
+  // Só revela a nova cena depois que o enquadramento cinematográfico terminar.
+  if (faded) await revealFade();
 }
 
 // ====== AÇÕES DE UM TOQUE ======
@@ -601,9 +602,8 @@ OBR.onReady(() => {
       console.log("[Camera Cinema] Estado da cena:", ready ? "pronta" : "carregando");
       if (ready) {
         subscribeItems();
-        // Nesta etapa, isolamos o teste da cobertura: a câmera ainda não se move.
-        if (CFG.intro.enabled && CFG.intro.fade) revealFade();
-        else introCut();
+        // Mantém a animação original de zoom-out e revela a cena ao final.
+        introCut();
       } else {
         mapBounds = null;
         unsubscribeItems();
