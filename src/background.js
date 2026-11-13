@@ -598,6 +598,7 @@ OBR.onReady(() => {
   // cena pronta: limites do mapa e corte animado
   try {
     OBR.scene.onReadyChange((ready) => {
+      console.log("[Camera Cinema] Estado da cena:", ready ? "pronta" : "carregando");
       if (ready) {
         subscribeItems();
         // Nesta etapa, isolamos o teste da cobertura: a câmera ainda não se move.
