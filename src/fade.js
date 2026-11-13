@@ -1,27 +1,23 @@
-// Camada de transição cinematográfica. A opacidade pode ser revertida em
-// qualquer ponto, sem esperar a cobertura preta terminar antes de revelar.
+// Tela preta mantida durante o carregamento da nova cena.
+// Quando o background enviar "reveal", a cortina desaparece rapidamente.
+// O zoom-out é iniciado separadamente pelo background, depois deste fade.
 const durationFromHash = Number.parseInt(location.hash.slice(1), 10);
-const startTransparent = new URLSearchParams(location.search).get("start") === "transparent";
 const channel = new BroadcastChannel("io.github.blackcode1242.camera-cinema/fade-control");
-const easing = "cubic-bezier(0.42, 0, 0.58, 1)";
+const easing = "cubic-bezier(0.4, 0, 0.2, 1)";
 let activeAnimation = null;
 
 document.documentElement.style.background = "transparent";
 document.body.style.background = "#000";
-document.body.style.opacity = startTransparent ? "0" : "1";
+document.body.style.opacity = "1";
 
-function animateOpacity(targetOpacity, requestedDuration, acknowledgement) {
-  const duration = Number.isFinite(requestedDuration)
-    ? Math.max(0, requestedDuration)
-    : durationFromHash > 0 ? durationFromHash : 2200;
+function reveal(durationFromMessage) {
+  const duration = Number.isFinite(durationFromMessage)
+    ? Math.max(0, durationFromMessage)
+    : durationFromHash > 0 ? durationFromHash : 500;
 
-  const currentOpacity = Number.parseFloat(getComputedStyle(document.body).opacity);
-  const fromOpacity = Number.isFinite(currentOpacity)
-    ? currentOpacity
-    : (startTransparent ? 0 : 1);
+  const computed = Number.parseFloat(getComputedStyle(document.body).opacity);
+  const fromOpacity = Number.isFinite(computed) ? computed : 1;
 
-  // Caso a cena fique pronta no meio do fade-in para preto, cancela essa
-  // animação no frame atual e inverte de onde ela realmente estiver.
   if (activeAnimation) {
     activeAnimation.cancel();
     activeAnimation = null;
@@ -29,20 +25,16 @@ function animateOpacity(targetOpacity, requestedDuration, acknowledgement) {
 
   if (typeof document.body.animate === "function") {
     const animation = document.body.animate(
-      [{ opacity: fromOpacity }, { opacity: targetOpacity }],
-      {
-        duration,
-        easing,
-        fill: "forwards",
-      }
+      [{ opacity: fromOpacity }, { opacity: 0 }],
+      { duration, easing, fill: "forwards" }
     );
     activeAnimation = animation;
 
     animation.onfinish = () => {
-      document.body.style.opacity = String(targetOpacity);
+      document.body.style.opacity = "0";
       if (activeAnimation === animation) activeAnimation = null;
       animation.cancel();
-      channel.postMessage({ type: acknowledgement });
+      channel.postMessage({ type: "revealed" });
     };
     animation.oncancel = () => {
       if (activeAnimation === animation) activeAnimation = null;
@@ -50,32 +42,24 @@ function animateOpacity(targetOpacity, requestedDuration, acknowledgement) {
     return;
   }
 
-  // Fallback para engines sem Web Animations API.
-  document.body.style.opacity = String(targetOpacity);
-  window.setTimeout(() => channel.postMessage({ type: acknowledgement }), duration);
+  document.body.style.transition = `opacity ${duration}ms ${easing}`;
+  requestAnimationFrame(() => { document.body.style.opacity = "0"; });
+  window.setTimeout(() => channel.postMessage({ type: "revealed" }), duration + 40);
 }
 
-// Reenvia "ready" até o background confirmar que recebeu o handshake.
-// Assim a primeira mensagem não se perde durante a criação do modal.
+// Repete o handshake até o background confirmar que recebeu a mensagem.
 const readyTimer = window.setInterval(() => {
   channel.postMessage({ type: "ready" });
 }, 120);
 channel.postMessage({ type: "ready" });
 
 channel.addEventListener("message", (event) => {
-  const type = event.data?.type;
-
-  if (type === "ready-ack") {
+  if (event.data?.type === "ready-ack") {
     window.clearInterval(readyTimer);
     return;
   }
 
-  if (type === "cover") {
-    animateOpacity(1, event.data.duration, "covered");
-    return;
-  }
-
-  if (type === "reveal") {
-    animateOpacity(0, event.data.duration, "revealed");
+  if (event.data?.type === "reveal") {
+    reveal(event.data.duration);
   }
 });
