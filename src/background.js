@@ -774,17 +774,14 @@ function handleSceneReady(ready) {
     introCut(generation, previousDeparture);
   } else {
     const previousBounds = mapBounds;
+    const wasInActiveScene = hasActiveScene;
     hasActiveScene = false;
     mapBounds = null;
     unsubscribeItems();
 
-    // O SDK avisa quando a cena deixa de estar pronta, mas não oferece um
-    // evento separado antes do clique nativo. Tentamos aproximar durante a
-    // janela de saída e fechamos a tela antes de revelar a próxima cena.
-    if (CFG.intro.enabled && hasActiveScene !== false) {
-      departureTask = departureCut(generation, previousBounds);
-    } else if (CFG.intro.enabled && previousBounds) {
-      // previousBounds também é um sinal de que havia uma cena em uso.
+    // O SDK sinaliza a saída da cena quando seu estado muda para não pronta.
+    // Nesse momento tentamos aproximar a câmera e fechar a cortina preta.
+    if (CFG.intro.enabled && wasInActiveScene) {
       departureTask = departureCut(generation, previousBounds);
     }
   }
