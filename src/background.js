@@ -555,7 +555,7 @@ async function revealFade(duration = CFG.intro.fadeMs) {
     fadePendingReveal = true;
   }
 
-  await Promise.race([revealed, sleep(duration + 900)]);
+  await Promise.race([revealed, sleep(duration + 300)]);
   fadeRevealResolve = null;
 
   try { await OBR.modal.close(FADE_ID); } catch (error) {
