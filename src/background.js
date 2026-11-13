@@ -118,7 +118,8 @@ let fadePendingReveal = false;
 let fadeReadyResolve = null;
 let fadeOpened = false;
 let fadeOpening = null;
-let introRunning = false;
+let sceneGeneration = 0;
+let lastSceneReady = null;
 
 
 // ====== TECLAS ======
@@ -203,8 +204,9 @@ async function refreshBounds() {
     if (!items.length) items = await OBR.scene.items.getItems();
     if (!items.length) { mapBounds = null; return; }
     mapBounds = await OBR.scene.items.getItemBounds(items.map((i) => i.id));
-  } catch {
+  } catch (error) {
     mapBounds = null;
+    console.warn("[Camera Cinema] Falha ao calcular os limites do mapa", error);
   }
 }
 
@@ -497,26 +499,24 @@ async function openFade() {
       initFadeChannel();
       fadeFrameReady = false;
       const readySignal = new Promise((resolve) => { fadeReadyResolve = resolve; });
-      const [w, h] = await Promise.all([
-        OBR.viewport.getWidth(),
-        OBR.viewport.getHeight(),
-      ]);
+
+      // fullScreen já ocupa a área inteira. Não consultar o viewport aqui:
+      // esta função também é chamada enquanto a cena está sendo descarregada.
       await OBR.modal.open({
         id: FADE_ID,
         url: `${FADE_URL}#${CFG.intro.fadeMs}`,
-        width: w,
-        height: h,
         fullScreen: true,
         hideBackdrop: true,
         hidePaper: true,
         disablePointerEvents: true,
       });
+
       fadeOpened = true;
-      // O iframe confirma quando já está pronto para receber o comando de clarear.
-      await Promise.race([readySignal, sleep(2000)]);
+      await Promise.race([readySignal, sleep(1500)]);
       return true;
     } catch (error) {
-      console.warn("[Camera Cinema] Falha ao abrir a camada preta", error);
+      console.error("[Camera Cinema] Falha ao abrir a camada preta", error);
+      notify("Câmera Cinema: não foi possível abrir a tela de transição.", "WARNING");
       return false;
     } finally {
       fadeOpening = null;
@@ -547,27 +547,76 @@ async function revealFade() {
   fadeChannel = null;
 }
 
-async function introCut() {
-  if (!CFG.intro.enabled || introRunning) return;
-  introRunning = true;
+async function introCut(generation) {
+  if (!CFG.intro.enabled) return;
+
   try {
     await sleep(CFG.intro.delay);
-    await refreshBounds();
-    if (!mapBounds) return;
+    if (generation !== sceneGeneration) return;
+
+    // Se a troca de cena já abriu o modal, reutiliza a mesma tela preta.
     const faded = CFG.intro.fade ? await openFade() : false;
-    await startLoop();
-    const fit = fitScaleFor(mapBounds, CFG.intro.padding);
-    anim = null;
-    followIds = null;
-    dollyReturn = null;
-    cam.cx = mapBounds.center.x;
-    cam.cy = mapBounds.center.y;
-    cam.scale = clamp(fit * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
-    push();
-    await flyTo({ cx: mapBounds.center.x, cy: mapBounds.center.y, scale: fit }, CFG.intro.flyMs, easeOutCubic);
+    if (generation !== sceneGeneration) return;
+
+    // O reset do próprio Owlbear calcula o enquadramento correto do mapa.
+    // Ele também funciona como fallback quando a cena não possui itens MAP.
+    const target = await OBR.viewport.reset();
+    if (generation !== sceneGeneration) return;
+
+    const [width, height] = await Promise.all([
+      OBR.viewport.getWidth(),
+      OBR.viewport.getHeight(),
+    ]);
+
+    if (!target?.position || !Number.isFinite(target.scale) || !width || !height) {
+      throw new Error("O Owlbear não retornou um enquadramento válido para a cena.");
+    }
+
+    // Converte a transformação de destino para o centro do mapa no mundo.
+    const centerX = (width / 2 - target.position.x) / target.scale;
+    const centerY = (height / 2 - target.position.y) / target.scale;
+    const startScale = clamp(target.scale * CFG.intro.startZoom, CFG.minScale, CFG.maxScale);
+    const startPosition = {
+      x: width / 2 - centerX * startScale,
+      y: height / 2 - centerY * startScale,
+    };
+
+    // Começa aproximado no centro e usa a animação nativa do Owlbear para
+    // revelar o enquadramento completo, sem enviar dezenas de atualizações por segundo.
+    await OBR.viewport.setScale(startScale);
+    await OBR.viewport.setPosition(startPosition);
+    if (generation !== sceneGeneration) return;
+
+    await OBR.viewport.animateTo(target);
+    if (generation !== sceneGeneration) return;
+
     if (faded) await revealFade();
-  } finally {
-    introRunning = false;
+  } catch (error) {
+    console.error("[Camera Cinema] Falha na introdução da cena", error);
+    notify(`Câmera Cinema: falha ao enquadrar a cena. ${error?.message ?? "Verifique o console."}`, "WARNING");
+
+    // Nunca deixa a sala presa em preto quando uma operação de câmera falhar.
+    if (generation === sceneGeneration && fadeOpened) await revealFade();
+  }
+}
+
+function handleSceneReady(ready) {
+  // isReady() e onReadyChange podem reportar o mesmo estado na inicialização.
+  if (lastSceneReady === ready) return;
+  lastSceneReady = ready;
+
+  const generation = ++sceneGeneration;
+  console.log("[Camera Cinema] Estado da cena:", ready ? "pronta" : "carregando");
+
+  if (ready) {
+    subscribeItems();
+    introCut(generation);
+  } else {
+    mapBounds = null;
+    unsubscribeItems();
+
+    // Abre a cobertura já no início da descarga da cena anterior.
+    if (CFG.intro.enabled && CFG.intro.fade) openFade();
   }
 }
 
@@ -598,28 +647,19 @@ OBR.onReady(() => {
     OBR.broadcast.onMessage(CH_CAM, (e) => onGmMessage(e.data));
   } catch { /* ignore */ }
 
-  // cena pronta: limites do mapa e corte animado
+  // cena pronta: uma única transição por mudança real de estado
   try {
-    OBR.scene.onReadyChange((ready) => {
-      console.log("[Camera Cinema] Estado da cena:", ready ? "pronta" : "carregando");
-      if (ready) {
-        subscribeItems();
-        // Mantém a animação original de zoom-out e revela a cena ao final.
-        introCut();
-      } else {
-        mapBounds = null;
-        unsubscribeItems();
-        // Abre a cobertura assim que o Owlbear sinaliza que a cena deixou de estar pronta.
-        if (CFG.intro.enabled && CFG.intro.fade) openFade();
-      }
-    });
-    Promise.resolve(OBR.scene.isReady()).then((ready) => {
-      if (ready) {
-        subscribeItems();
-        introCut();
-      }
-    }).catch(noop);
-  } catch { /* ignore */ }
+    OBR.scene.onReadyChange(handleSceneReady);
+    Promise.resolve(OBR.scene.isReady())
+      .then(handleSceneReady)
+      .catch((error) => {
+        console.error("[Camera Cinema] Não foi possível consultar o estado da cena", error);
+        notify("Câmera Cinema: não foi possível detectar quando a cena ficou pronta.", "WARNING");
+      });
+  } catch (error) {
+    console.error("[Camera Cinema] Falha ao registrar mudanças de cena", error);
+    notify("Câmera Cinema: falha ao acompanhar as trocas de cena.", "WARNING");
+  }
 
   OBR.tool.create({
     id: TOOL_ID,
