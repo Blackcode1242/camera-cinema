@@ -1,0 +1,77 @@
+name: Deploy Camera Cinema preview
+
+on:
+  push:
+    branches:
+      - prototype/scene-transition
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout official main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-source
+
+      - name: Checkout preview branch
+        uses: actions/checkout@v4
+        with:
+          ref: prototype/scene-transition
+          path: preview-source
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build official site unchanged at root
+        working-directory: main-source
+        run: |
+          npm install
+          npm run build
+          mkdir -p ../site
+          cp -a dist/. ../site/
+
+      - name: Build preview in its own subdirectory
+        working-directory: preview-source
+        run: |
+          npm install
+          npm run build -- --outDir ../site/preview
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest_path = Path("../site/preview/manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          base = "https://blackcode1242.github.io/camera-cinema/preview"
+          manifest["name"] = "Câmera Cinematográfica (preview)"
+          manifest["version"] = "1.1.0-preview"
+          manifest["icon"] = f"{base}/icon.svg"
+          manifest["background_url"] = f"{base}/background.html"
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload combined official + preview site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
