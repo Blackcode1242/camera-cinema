@@ -1,0 +1,9 @@
+{
+  "name": "Câmera Cinematográfica (teste)",
+  "version": "1.1.0-preview",
+  "manifest_version": 1,
+  "author": "Blackcode1242",
+  "description": "Versão local de teste da transição de cenas.",
+  "icon": "http://localhost:5173/icon.svg",
+  "background_url": "http://localhost:5173/background.html"
+}
